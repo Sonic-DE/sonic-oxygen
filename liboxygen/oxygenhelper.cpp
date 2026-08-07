@@ -738,7 +738,14 @@ bool Helper::isX11(void)
 //____________________________________________________________________
 xcb_connection_t *Helper::connection(void)
 {
-    return QX11Info::connection();
+    // The thumbnail kioworker can initialize the Oxygen style without a usable
+    // XCB connection even on an X11 session, so reject null or broken
+    // connections here and treat them as unavailable. This is the single
+    // guarded boundary for the direct XCB helpers below.
+    xcb_connection_t* connection(QX11Info::connection());
+    if (!connection || xcb_connection_has_error(connection))
+        return nullptr;
+    return connection;
 }
 
 //____________________________________________________________________
@@ -746,8 +753,16 @@ xcb_atom_t Helper::createAtom(const QString &name) const
 {
     if (!isX11())
         return 0;
-    xcb_intern_atom_cookie_t cookie(xcb_intern_atom(connection(), false, name.size(), qPrintable(name)));
-    ScopedPointer<xcb_intern_atom_reply_t> reply(xcb_intern_atom_reply(connection(), cookie, nullptr));
+
+    // Resolve the connection once through the guarded accessor so a null or
+    // broken connection never reaches xcb_intern_atom(), which would
+    // dereference it and crash inside libxcb.
+    xcb_connection_t* connection(Helper::connection());
+    if (!connection)
+        return 0;
+
+    xcb_intern_atom_cookie_t cookie(xcb_intern_atom(connection, false, name.size(), qPrintable(name)));
+    ScopedPointer<xcb_intern_atom_reply_t> reply(xcb_intern_atom_reply(connection, cookie, nullptr));
     return reply ? reply->atom : 0;
 }
 
@@ -821,9 +836,15 @@ void Helper::setHasHint(xcb_window_t id, xcb_atom_t atom, bool value) const
     if (!id)
         return;
 
+    // Resolve the connection through the guarded accessor so a null or broken
+    // connection never reaches xcb_change_property()/xcb_flush().
+    xcb_connection_t* connection(Helper::connection());
+    if (!connection)
+        return;
+
     quint32 uLongValue(value);
-    xcb_change_property(connection(), XCB_PROP_MODE_REPLACE, id, atom, XCB_ATOM_CARDINAL, 32, 1, &uLongValue);
-    xcb_flush(connection());
+    xcb_change_property(connection, XCB_PROP_MODE_REPLACE, id, atom, XCB_ATOM_CARDINAL, 32, 1, &uLongValue);
+    xcb_flush(connection);
     return;
 }
 
@@ -837,8 +858,14 @@ bool Helper::hasHint(xcb_window_t id, xcb_atom_t atom) const
     if (!id)
         return false;
 
-    xcb_get_property_cookie_t cookie(xcb_get_property(connection(), 0, id, atom, XCB_ATOM_CARDINAL, 0, 1));
-    ScopedPointer<xcb_get_property_reply_t> reply(xcb_get_property_reply(connection(), cookie, nullptr));
+    // Resolve the connection through the guarded accessor so a null or broken
+    // connection never reaches xcb_get_property()/xcb_get_property_reply().
+    xcb_connection_t* connection(Helper::connection());
+    if (!connection)
+        return false;
+
+    xcb_get_property_cookie_t cookie(xcb_get_property(connection, 0, id, atom, XCB_ATOM_CARDINAL, 0, 1));
+    ScopedPointer<xcb_get_property_reply_t> reply(xcb_get_property_reply(connection, cookie, nullptr));
 
     return reply && xcb_get_property_value_length(reply.data()) && reinterpret_cast<int32_t *>(xcb_get_property_value(reply.data()))[0];
 }
